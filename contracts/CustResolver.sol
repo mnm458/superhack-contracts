@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.9;
-
-import {IEAS, AttestationRequest, AttestationRequestData} from "@ethereum-attestation-service/eas-contracts/contracts/IEAS.sol";
-import {NO_EXPIRATION_TIME, EMPTY_UID} from "@ethereum-attestation-service/eas-contracts/contracts/Common.sol";
+pragma solidity ^0.8.10;
+import {IEAS, Attestation} from "@ethereum-attestation-service/eas-contracts/contracts/IEAS.sol";
+import {SchemaResolver} from "@ethereum-attestation-service/eas-contracts/contracts/resolver/SchemaResolver.sol";
 import {ByteHasher} from "./ByteHasher.sol";
+import {ISchemaRegistry} from "@ethereum-attestation-service/eas-contracts/contracts/ISchemaRegistry.sol";
 import {IWorldID} from "../interfaces/IWorldID.sol";
 
-/// @title ExampleAttester
-/// @notice Ethereum Attestation Service - Example
-contract ExampleAttester {
+contract CustResolver is SchemaResolver {
     using ByteHasher for bytes;
-    error InvalidEAS();
+    string public constant registrationSchema =
+        "bytes32 projectUid,string textField";
+
+    bytes32 public immutable registrationSchemaUID;
 
     /// @notice Thrown when attempting to reuse a nullifier
     error InvalidNullifier();
@@ -24,77 +25,66 @@ contract ExampleAttester {
     /// @dev The World ID group ID (always 1)
     uint256 internal immutable groupId = 1;
 
+    event Log(uint256 value);
+
     /// @dev Whether a nullifier hash has been used already. Used to guarantee an action is only performed once by a single person
     mapping(uint256 => bool) internal nullifierHashes;
 
-    // The address of the global EAS contract.
-    IEAS private immutable _eas;
-
-    /// @notice Creates a new ExampleAttester instance.
-    /// @param eas The address of the global EAS contract.
     constructor(
         IEAS eas,
+        ISchemaRegistry _schemaRegistry,
         IWorldID _worldId,
         string memory _appId,
         string memory _actionId
-    ) {
-        if (address(eas) == address(0)) {
-            revert InvalidEAS();
-        }
-        _eas = eas;
+    ) SchemaResolver(eas) {
+        registrationSchemaUID = _schemaRegistry.register(
+            registrationSchema,
+            this,
+            true
+        );
         worldId = _worldId;
         externalNullifier = abi
             .encodePacked(abi.encodePacked(_appId).hashToField(), _actionId)
             .hashToField();
     }
 
-    /// @notice Attests to a schema that receives a uint256 parameter.
-    /// @param schema The schema UID to attest to.
-    /// @param input The uint256 value to pass to to the resolver.
-    /// @return The UID of the new attestation.
-    function attestUint(
-        bytes32 schema,
-        uint256 input
-    ) external returns (bytes32) {
-        return
-            _eas.attest(
-                AttestationRequest({
-                    schema: schema,
-                    data: AttestationRequestData({
-                        recipient: address(0), // No recipient
-                        expirationTime: NO_EXPIRATION_TIME, // No expiration time
-                        revocable: true,
-                        refUID: EMPTY_UID, // No references UI
-                        data: abi.encode(input), // Encode a single uint256 as a parameter to the schema
-                        value: 0 // No value/ETH
-                    })
-                })
-            );
-    }
-
-    function verifyAndExecute(
-        address signal,
-        uint256 root,
-        uint256 nullifierHash,
-        uint256[8] calldata proof
-    ) public {
-        // First, we make sure this person hasn't done this before
-        if (nullifierHashes[nullifierHash]) revert InvalidNullifier();
-
+    function onAttest(
+        Attestation calldata attestation,
+        uint256 value
+    ) internal override returns (bool) {
         // We now verify the provided proof is valid and the user is verified by World ID
-        worldId.verifyProof(
-            root,
-            groupId,
-            abi.encodePacked(signal).hashToField(),
-            nullifierHash,
-            externalNullifier,
-            proof
-        );
 
         // We now record the user has done this, so they can't do it again (proof of uniqueness)
-        nullifierHashes[nullifierHash] = true;
 
-        // Finally, execute your logic here, for example issue a token, NFT, etc...
-        // Make sure to emit some kind of event afterwards!
+        emit Log(1);
+        (
+            bytes32 _projectUid,
+            string memory _textField,
+            address _signal,
+            uint256 _root,
+            uint256 _nullifierHash,
+            uint256[8] memory _proof
+        ) = abi.decode(
+                attestation.data,
+                (bytes32, string, address, uint256, uint256, uint256[8])
+            );
+        if (nullifierHashes[_nullifierHash]) revert InvalidNullifier();
+        worldId.verifyProof(
+            _root,
+            groupId,
+            abi.encodePacked(_signal).hashToField(),
+            _nullifierHash,
+            externalNullifier,
+            _proof
+        );
+        nullifierHashes[_nullifierHash] = true;
+        return true;
+    }
+
+    function onRevoke(
+        Attestation calldata attestation,
+        uint256 value
+    ) internal pure override returns (bool) {
+        return true;
     }
 }
